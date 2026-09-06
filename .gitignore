@@ -1,0 +1,16 @@
+# Xcode
+build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+.DS_Store
+
+# Never commit certificate material
+*.pem
+*.key
+*.crt
+*.cer
+*.der
+*.p12
+*.pfx
