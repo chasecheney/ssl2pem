@@ -4,6 +4,12 @@ A small drag-and-drop macOS app that combines a private key, a certificate and a
 
 Built with SwiftUI and the Security framework — no OpenSSL, no dependencies.
 
+## Download
+
+[Download ssl2pem 1.0 for macOS](https://github.com/chasecheney/ssl2pem/releases/download/v1.0.0/ssl2pem-1.0-macos-universal.zip) · [Release notes and checksum](https://github.com/chasecheney/ssl2pem/releases/tag/v1.0.0)
+
+Requires macOS 14 or newer. Unzip the download and move `ssl2pem.app` to Applications. The universal app supports Intel and Apple Silicon and is Developer ID signed.
+
 ## What it does
 
 Drop `private.key`, `certificate.crt` and `ca_bundle.crt` anywhere in the window (or one at a time into their slots) and the app will:
