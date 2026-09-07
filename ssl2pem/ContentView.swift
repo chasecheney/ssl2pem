@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import PEMCore
 
 struct ContentView: View {
     @EnvironmentObject private var model: BundleModel
@@ -10,11 +11,15 @@ struct ContentView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 slotsSection
-                if let info = model.certInfo {
+                if let error = model.certError {
+                    Label(error, systemImage: "xmark.octagon.fill")
+                        .foregroundStyle(.red)
+                } else if let info = model.certInfo {
                     CertificateSummaryView(info: info, keyInfo: model.keyInfo, chainInfo: model.chainInfo,
                                            showAllDetails: $showAllDetails)
-                } else if model.files[.key] != nil || model.files[.ca] != nil {
-                    Text("Drop the certificate to see its details.")
+                } else if model.files[.key] != nil || model.files[.chain] != nil {
+                    Label("Drop the server certificate to see its details and verify the key and chain.",
+                          systemImage: "info.circle")
                         .foregroundStyle(.secondary)
                 }
                 outputSection
@@ -24,18 +29,39 @@ struct ContentView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .overlay {
             if windowTargeted {
-                RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(Color.accentColor, lineWidth: 3)
-                    .padding(6)
-                    .allowsHitTesting(false)
+                ZStack {
+                    Color.accentColor.opacity(0.08)
+                    RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [10, 6]))
+                        .padding(8)
+                    Text("Drop to add")
+                        .font(.title2.weight(.semibold))
+                        .padding(.horizontal, 18).padding(.vertical, 10)
+                        .background(.regularMaterial, in: Capsule())
+                }
+                .allowsHitTesting(false)
             }
         }
         .onDrop(of: [.fileURL], isTargeted: $windowTargeted) { providers in
             DropHelper.urls(from: providers) { urls in model.load(urls: urls) }
             return true
         }
-        .alert("Error", isPresented: Binding(get: { model.errorMessage != nil },
-                                            set: { if !$0 { model.errorMessage = nil } })) {
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                if model.isAnalyzing {
+                    ProgressView().controlSize(.small)
+                }
+                Button {
+                    model.clearAll()
+                } label: {
+                    Label("Clear All", systemImage: "trash")
+                }
+                .disabled(model.files.isEmpty)
+                .help("Remove all files (⇧⌘K)")
+            }
+        }
+        .alert("Couldn't use that file", isPresented: Binding(get: { model.errorMessage != nil },
+                                                              set: { if !$0 { model.errorMessage = nil } })) {
             Button("OK", role: .cancel) { }
         } message: {
             Text(model.errorMessage ?? "")
@@ -46,21 +72,18 @@ struct ContentView: View {
 
     private var slotsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Drop your files")
-                    .font(.title2.weight(.semibold))
-                Spacer()
-                if !model.files.isEmpty {
-                    Button("Clear All") { model.clearAll() }
-                }
-            }
-            Text("Drop all three at once anywhere in the window and they'll be sorted automatically, or drop each file into its slot.")
+            Text("Drop your files")
+                .font(.title2.weight(.semibold))
+            Text("Drop all three at once anywhere in the window and they'll be sorted by content, or drop each file into its slot.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
             HStack(spacing: 12) {
                 ForEach(Slot.allCases) { slot in
                     FileSlotView(slot: slot)
                 }
+            }
+            if model.hasEncryptedKey {
+                PassphraseField()
             }
         }
     }
@@ -70,30 +93,38 @@ struct ContentView: View {
     private var outputSection: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 12) {
-                Picker("Order", selection: $model.order) {
+                Picker("Format", selection: $model.order) {
                     ForEach(PEMOrder.allCases) { order in
                         Text(order.title).tag(order)
                     }
                 }
                 .pickerStyle(.menu)
+                .fixedSize()
 
                 Text(model.order.compatibility)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                let (pem, warnings) = model.output
-                ForEach(model.files.isEmpty ? [] : warnings) { w in
-                    Label(w.text, systemImage: "exclamationmark.triangle.fill")
+                if let blocker = model.exportBlocker {
+                    Label(blocker, systemImage: "hand.raised.fill")
                         .foregroundStyle(.orange)
                         .font(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let export = model.export {
+                    ForEach(export.warnings, id: \.self) { w in
+                        Label(w, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                            .font(.callout)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
 
                 HStack {
                     TextField("File name", text: $model.fileName)
                         .textFieldStyle(.roundedBorder)
                         .onChange(of: model.fileName) { _, newValue in
-                            // Only count it as a manual edit if it differs from the auto-suggested name.
                             let suggested = model.certInfo?.suggestedFileName ?? "certificate.pem"
                             if newValue != suggested { model.fileNameEdited = true }
                         }
@@ -104,6 +135,7 @@ struct ContentView: View {
                         Label("Copy", systemImage: "doc.on.clipboard")
                     }
                     .disabled(!model.canSave)
+                    .help("Copy the PEM text to the clipboard (⇧⌘C)")
                     Button {
                         model.save()
                     } label: {
@@ -112,11 +144,13 @@ struct ContentView: View {
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
                     .disabled(!model.canSave)
+                    .help("Save the combined .pem file (⌘S)")
                 }
 
                 HStack {
-                    if model.canSave {
-                        Text("\(pem.utf8.count.formatted()) bytes · \(PEM.blocks(in: pem).count) blocks")
+                    if let export = model.export {
+                        Text("\(export.data.count.formatted()) bytes · \(PEM.blocks(in: export.pem).count) blocks" +
+                             (export.containsPrivateKey ? " · saved with permissions 600" : ""))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -125,14 +159,45 @@ struct ContentView: View {
                         Label(status, systemImage: "checkmark.circle.fill")
                             .font(.caption)
                             .foregroundStyle(.green)
+                            .transition(.opacity)
                     }
                 }
+                .animation(.default, value: model.statusMessage)
             }
             .padding(6)
         } label: {
             Label("Output .pem", systemImage: "shippingbox")
                 .font(.headline)
         }
+    }
+}
+
+// MARK: - Passphrase
+
+struct PassphraseField: View {
+    @EnvironmentObject private var model: BundleModel
+    @State private var reveal = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "lock.fill").foregroundStyle(.secondary)
+            Group {
+                if reveal {
+                    TextField("Private key passphrase", text: $model.passphrase)
+                } else {
+                    SecureField("Private key passphrase", text: $model.passphrase)
+                }
+            }
+            .textFieldStyle(.roundedBorder)
+            .frame(maxWidth: 360)
+            Toggle(isOn: $reveal) { Image(systemName: reveal ? "eye.slash" : "eye") }
+                .toggleStyle(.button)
+                .help(reveal ? "Hide passphrase" : "Show passphrase")
+            Text("The key is encrypted. It's only unlocked to verify it and is exported still encrypted.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.top, 4)
     }
 }
 
@@ -143,13 +208,18 @@ struct FileSlotView: View {
     let slot: Slot
     @State private var targeted = false
 
-    private var file: LoadedFile? { model.files[slot] }
+    private var file: ImportedFile? { model.files[slot] }
 
     var body: some View {
         VStack(spacing: 8) {
-            Image(systemName: file == nil ? slot.systemImage : "checkmark.circle.fill")
-                .font(.system(size: 28))
-                .foregroundStyle(file == nil ? Color.secondary : Color.green)
+            ZStack {
+                Circle()
+                    .fill(file == nil ? Color.secondary.opacity(0.12) : Color.green.opacity(0.15))
+                    .frame(width: 52, height: 52)
+                Image(systemName: file == nil ? slot.systemImage : "checkmark")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(file == nil ? Color.secondary : Color.green)
+            }
             Text(slot.title)
                 .font(.headline)
             if let file {
@@ -158,14 +228,15 @@ struct FileSlotView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .help(file.url.path)
-                Text(blockSummary(file.blocks))
+                Text(blockSummary(file))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if let warning = model.slotWarnings[slot] {
+                if let warning = file.warning {
                     Label(warning, systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
                         .foregroundStyle(.orange)
                         .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 HStack {
                     Button("Change…") { model.chooseFile(for: slot) }
@@ -180,7 +251,7 @@ struct FileSlotView: View {
                     .controlSize(.small)
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 150)
+        .frame(maxWidth: .infinity, minHeight: 160)
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 12)
@@ -191,10 +262,11 @@ struct FileSlotView: View {
                 .strokeBorder(style: StrokeStyle(lineWidth: targeted ? 2 : 1, dash: file == nil ? [6, 4] : []))
                 .foregroundStyle(targeted ? Color.accentColor : Color.secondary.opacity(0.4))
         )
+        .animation(.easeInOut(duration: 0.15), value: targeted)
         .onDrop(of: [.fileURL], isTargeted: $targeted) { providers in
             DropHelper.urls(from: providers) { urls in
-                if urls.count == 1, let url = urls.first {
-                    model.load(url: url, into: slot)
+                if urls.count == 1 || slot == .chain {
+                    model.load(urls: urls, into: slot)
                 } else {
                     model.load(urls: urls)
                 }
@@ -203,13 +275,12 @@ struct FileSlotView: View {
         }
     }
 
-    private func blockSummary(_ blocks: [PEM.Block]) -> String {
-        let certs = blocks.filter { $0.type == "CERTIFICATE" }.count
-        let keys = blocks.filter { PEM.isPrivateKeyType($0.type) }.count
+    private func blockSummary(_ file: ImportedFile) -> String {
         var parts: [String] = []
+        let certs = file.certificateCount, keys = file.privateKeyCount
         if certs > 0 { parts.append("\(certs) certificate\(certs == 1 ? "" : "s")") }
-        if keys > 0 { parts.append("\(keys) private key\(keys == 1 ? "" : "s")") }
-        let other = blocks.count - certs - keys
+        if keys > 0 { parts.append(file.isEncryptedKey ? "encrypted private key" : "private key") }
+        let other = file.blocks.count - certs - keys
         if other > 0 { parts.append("\(other) other") }
         return parts.isEmpty ? "no PEM blocks" : parts.joined(separator: ", ")
     }
@@ -243,11 +314,7 @@ struct CertificateSummaryView: View {
                     row("Issuer") {
                         HStack(spacing: 6) {
                             Text(info.issuer).textSelection(.enabled)
-                            if info.isSelfSigned {
-                                Text("self-signed")
-                                    .font(.caption).padding(.horizontal, 6).padding(.vertical, 2)
-                                    .background(Color.orange.opacity(0.2), in: Capsule())
-                            }
+                            if info.isSelfSigned { badge("self-signed", .orange) }
                         }
                     }
                     row("Valid") {
@@ -343,11 +410,12 @@ struct CertificateSummaryView: View {
             switch keyInfo.match {
             case .matches:  Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
             case .mismatch: Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
-            case .unknown:  Image(systemName: "questionmark.circle").foregroundStyle(.secondary)
+            case .unknown:  Image(systemName: keyInfo.needsPassphrase ? "lock.fill" : "questionmark.circle").foregroundStyle(.secondary)
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text(keyInfo.typeDescription)
                 Text(keyInfo.note).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -358,7 +426,7 @@ struct CertificateSummaryView: View {
             case .valid:       Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
             case .privateRoot: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
             case .invalid:     Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
-            case .unknown: Image(systemName: "questionmark.circle").foregroundStyle(.secondary)
+            case .unknown:     Image(systemName: "questionmark.circle").foregroundStyle(.secondary)
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text(chain.summary).fixedSize(horizontal: false, vertical: true)

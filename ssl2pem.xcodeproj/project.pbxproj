@@ -3,17 +3,15 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 56;
+	objectVersion = 60;
 	objects = {
 
 /* Begin PBXBuildFile section */
 		A1000001000000000000000A /* ssl2pemApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000100000000000000A0 /* ssl2pemApp.swift */; };
 		A1000001000000000000000B /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000100000000000000B0 /* ContentView.swift */; };
 		A1000001000000000000000C /* BundleModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000100000000000000C0 /* BundleModel.swift */; };
-		A1000001000000000000000D /* CertificateInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000100000000000000D0 /* CertificateInfo.swift */; };
-		A1000001000000000000000E /* KeyAndChain.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000100000000000000E0 /* KeyAndChain.swift */; };
-		A1000001000000000000000F /* PEM.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000100000000000000F0 /* PEM.swift */; };
 		A10000010000000000000010 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000100 /* Assets.xcassets */; };
+		A10000010000000000000200 /* PEMCore in Frameworks */ = {isa = PBXBuildFile; productRef = A10000010000000000000202 /* PEMCore */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -21,9 +19,6 @@
 		A100000100000000000000A0 /* ssl2pemApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ssl2pemApp.swift; sourceTree = "<group>"; };
 		A100000100000000000000B0 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A100000100000000000000C0 /* BundleModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundleModel.swift; sourceTree = "<group>"; };
-		A100000100000000000000D0 /* CertificateInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CertificateInfo.swift; sourceTree = "<group>"; };
-		A100000100000000000000E0 /* KeyAndChain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyAndChain.swift; sourceTree = "<group>"; };
-		A100000100000000000000F0 /* PEM.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PEM.swift; sourceTree = "<group>"; };
 		A10000010000000000000100 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A10000010000000000000110 /* ssl2pem.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ssl2pem.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -33,6 +28,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A10000010000000000000200 /* PEMCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -53,9 +49,6 @@
 				A100000100000000000000A0 /* ssl2pemApp.swift */,
 				A100000100000000000000B0 /* ContentView.swift */,
 				A100000100000000000000C0 /* BundleModel.swift */,
-				A100000100000000000000D0 /* CertificateInfo.swift */,
-				A100000100000000000000E0 /* KeyAndChain.swift */,
-				A100000100000000000000F0 /* PEM.swift */,
 				A10000010000000000000100 /* Assets.xcassets */,
 				A10000010000000000000110 /* ssl2pem.entitlements */,
 			);
@@ -86,6 +79,9 @@
 			dependencies = (
 			);
 			name = ssl2pem;
+			packageProductDependencies = (
+				A10000010000000000000202 /* PEMCore */,
+			);
 			productName = ssl2pem;
 			productReference = A10000010000000000000001 /* ssl2pem.app */;
 			productType = "com.apple.product-type.application";
@@ -114,6 +110,9 @@
 				Base,
 			);
 			mainGroup = A10000010000000000000030;
+			packageReferences = (
+				A10000010000000000000201 /* XCLocalSwiftPackageReference "PEMCore" */,
+			);
 			productRefGroup = A10000010000000000000032 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -142,13 +141,24 @@
 				A1000001000000000000000A /* ssl2pemApp.swift in Sources */,
 				A1000001000000000000000B /* ContentView.swift in Sources */,
 				A1000001000000000000000C /* BundleModel.swift in Sources */,
-				A1000001000000000000000D /* CertificateInfo.swift in Sources */,
-				A1000001000000000000000E /* KeyAndChain.swift in Sources */,
-				A1000001000000000000000F /* PEM.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		A10000010000000000000201 /* XCLocalSwiftPackageReference "PEMCore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = PEMCore;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A10000010000000000000202 /* PEMCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = PEMCore;
+		};
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCBuildConfiguration section */
 		A10000010000000000000070 /* Debug */ = {

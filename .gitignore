@@ -14,3 +14,7 @@ xcuserdata/
 *.der
 *.p12
 *.pfx
+
+# Swift Package Manager
+PEMCore/.build/
+PEMCore/.swiftpm/

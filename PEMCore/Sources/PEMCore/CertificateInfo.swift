@@ -2,50 +2,53 @@ import Foundation
 import Security
 import CryptoKit
 
-struct CertField: Identifiable, Hashable {
-    let id = UUID()
-    let section: String
-    let label: String
-    let value: String
+public struct CertField: Identifiable, Hashable, Sendable {
+    public let id = UUID()
+    public let section: String
+    public let label: String
+    public let value: String
+    public init(section: String, label: String, value: String) {
+        self.section = section; self.label = label; self.value = value
+    }
 }
 
 /// Everything we know about an X.509 certificate, parsed with the Security framework.
-struct CertificateInfo {
-    let certificate: SecCertificate
-    let der: Data
+public struct CertificateInfo: @unchecked Sendable {
+    public let certificate: SecCertificate
+    public let der: Data
 
-    let commonName: String
-    let subject: String
-    let subjectAltNames: [String]
-    let issuer: String
-    let issuerFull: String
-    let notBefore: Date?
-    let notAfter: Date?
-    let serial: String
-    let signatureAlgorithm: String
-    let keyDescription: String
-    let sha256Fingerprint: String
-    let sha1Fingerprint: String
-    let isSelfSigned: Bool
-    let allFields: [CertField]
+    public let commonName: String
+    public let subject: String
+    public let subjectAltNames: [String]
+    public let issuer: String
+    public let issuerFull: String
+    public let notBefore: Date?
+    public let notAfter: Date?
+    public let serial: String
+    public let signatureAlgorithm: String
+    public let keyDescription: String
+    public let sha256Fingerprint: String
+    public let sha1Fingerprint: String
+    public let isSelfSigned: Bool
+    public let allFields: [CertField]
 
-    var isExpired: Bool {
+    public var isExpired: Bool {
         guard let notAfter else { return false }
         return notAfter < Date()
     }
 
-    var isNotYetValid: Bool {
+    public var isNotYetValid: Bool {
         guard let notBefore else { return false }
         return notBefore > Date()
     }
 
-    var daysRemaining: Int? {
+    public var daysRemaining: Int? {
         guard let notAfter else { return nil }
         return Calendar.current.dateComponents([.day], from: Date(), to: notAfter).day
     }
 
     /// Domains covered by this certificate (CN + SANs, de-duplicated, CN first).
-    var coveredNames: [String] {
+    public var coveredNames: [String] {
         var seen = Set<String>()
         var out: [String] = []
         for n in [commonName] + subjectAltNames where !n.isEmpty && !seen.contains(n) {
@@ -56,7 +59,7 @@ struct CertificateInfo {
     }
 
     /// Suggested output file name, e.g. `example.com.pem`.
-    var suggestedFileName: String {
+    public var suggestedFileName: String {
         var base = commonName.isEmpty ? (subjectAltNames.first ?? "certificate") : commonName
         if base.hasPrefix("*.") { base = "wildcard." + base.dropFirst(2) }
         base = base.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: " ", with: "_")
@@ -65,12 +68,12 @@ struct CertificateInfo {
 
     // MARK: - Parsing
 
-    enum ParseError: LocalizedError {
+    public enum ParseError: LocalizedError {
         case noCertificate
         case invalidDER
         case noValues
 
-        var errorDescription: String? {
+        public var errorDescription: String? {
             switch self {
             case .noCertificate: return "No certificate block found in the file."
             case .invalidDER:    return "The certificate data could not be parsed."
@@ -79,14 +82,14 @@ struct CertificateInfo {
         }
     }
 
-    static func parse(der: Data) throws -> CertificateInfo {
+    public static func parse(der: Data) throws -> CertificateInfo {
         guard let cert = SecCertificateCreateWithData(nil, der as CFData) else {
             throw ParseError.invalidDER
         }
         return try parse(certificate: cert, der: der)
     }
 
-    static func parse(certificate cert: SecCertificate, der: Data) throws -> CertificateInfo {
+    public static func parse(certificate cert: SecCertificate, der: Data) throws -> CertificateInfo {
         guard let raw = SecCertificateCopyValues(cert, nil, nil) as? [String: [String: Any]] else {
             throw ParseError.noValues
         }
@@ -116,6 +119,9 @@ struct CertificateInfo {
         var sans: [String] = []
         if let sanValue = entry(kSecOIDSubjectAltName)?[kSecPropertyKeyValue as String] as? [[String: Any]] {
             for item in sanValue {
+                // Skip the "Critical: Yes/No" entry that Security lists alongside the names.
+                let label = ((item[kSecPropertyKeyLabel as String] as? String) ?? "").lowercased()
+                guard !label.hasPrefix("critical") else { continue }
                 if let v = item[kSecPropertyKeyValue as String] as? String {
                     sans.append(v)
                 }
@@ -301,7 +307,7 @@ struct CertificateInfo {
 }
 
 /// Friendly names for OIDs that Security sometimes reports raw.
-enum OIDNames {
+public enum OIDNames {
     static let shortNames: [String: String] = [
         "2.5.4.3": "CN", "Common Name": "CN",
         "2.5.4.10": "O", "Organization": "O", "Organization Name": "O",
@@ -354,11 +360,11 @@ enum OIDNames {
         "1.3.6.1.4.1.11129.2.4.2": "Signed Certificate Timestamps",
     ]
 
-    static func name(for oid: String) -> String? { names[oid] }
+    public static func name(for oid: String) -> String? { names[oid] }
     static func shortName(for label: String) -> String? { shortNames[label] }
 
     /// Replace a raw dotted OID with its friendly name; leave other labels alone.
-    static func friendly(_ label: String) -> String {
+    public static func friendly(_ label: String) -> String {
         if let n = names[label] { return n }
         if let s = shortNames[label], label.first?.isNumber == true { return s }
         return label

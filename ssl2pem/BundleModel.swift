@@ -3,122 +3,106 @@ import AppKit
 import SwiftUI
 import Security
 import UniformTypeIdentifiers
+import PEMCore
 
-enum Slot: String, CaseIterable, Identifiable {
-    case key, cert, ca
+typealias Slot = PEMRole
 
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .key:  return "Private Key"
-        case .cert: return "Certificate"
-        case .ca:   return "CA Bundle"
-        }
-    }
-
-    var hint: String {
-        switch self {
-        case .key:  return "private.key"
-        case .cert: return "certificate.crt"
-        case .ca:   return "ca_bundle.crt"
-        }
-    }
-
+extension PEMRole {
     var systemImage: String {
         switch self {
-        case .key:  return "key.fill"
-        case .cert: return "doc.badge.ellipsis"
-        case .ca:   return "doc.on.doc.fill"
+        case .key:         return "key.fill"
+        case .certificate: return "doc.badge.ellipsis"
+        case .chain:       return "doc.on.doc.fill"
         }
     }
 }
 
-struct LoadedFile {
-    let url: URL
-    let blocks: [PEM.Block]
-    var name: String { url.lastPathComponent }
+/// Result of analysing the current set of files. Computed off the main actor.
+struct Analysis: Sendable {
+    var certInfo: CertificateInfo?
+    var certError: String?
+    var keyInfo: PrivateKeyInfo?
+    var chainInfo: ChainInfo?
 }
 
 @MainActor
 final class BundleModel: ObservableObject {
-    @Published var files: [Slot: LoadedFile] = [:]
-    @Published var certInfo: CertificateInfo?
-    @Published var keyInfo: PrivateKeyInfo?
-    @Published var chainInfo: ChainInfo?
-    @Published var slotWarnings: [Slot: String] = [:]
+    @Published private(set) var files: [Slot: ImportedFile] = [:]
+    @Published private(set) var certInfo: CertificateInfo?
+    @Published private(set) var certError: String?
+    @Published private(set) var keyInfo: PrivateKeyInfo?
+    @Published private(set) var chainInfo: ChainInfo?
+    @Published private(set) var isAnalyzing = false
 
-    @Published var order: PEMOrder = .keyCertCA
+    @Published var order: PEMOrder = .keyCertCA { didSet { refreshExport() } }
+    @Published var passphrase: String = "" { didSet { scheduleReanalysis() } }
     @Published var fileName: String = "certificate.pem"
     @Published var fileNameEdited = false
     @Published var errorMessage: String?
     @Published var statusMessage: String?
 
-    var canSave: Bool { files[.cert] != nil }
+    /// The export as it would be written right now, or the reason it can't be.
+    @Published private(set) var export: ExportResult?
+    @Published private(set) var exportBlocker: String?
+
+    private var analysisTask: Task<Void, Never>?
+    private var reanalysisDebounce: Task<Void, Never>?
+    private var statusTask: Task<Void, Never>?
+
+    var canSave: Bool { export != nil }
+    var hasEncryptedKey: Bool { files[.key]?.isEncryptedKey ?? false }
 
     // MARK: Loading
 
-    /// Load a URL into a specific slot, or auto-detect the slot when `slot` is nil.
+    /// Load one URL into a specific slot, or auto-detect the slot when `slot` is nil.
     func load(url: URL, into slot: Slot?) {
-        let accessing = url.startAccessingSecurityScopedResource()
-        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        load(urls: [url], into: slot)
+    }
 
-        let data: Data
-        do {
-            data = try Data(contentsOf: url)
-        } catch {
-            errorMessage = "Couldn't read \(url.lastPathComponent): \(error.localizedDescription)"
-            return
-        }
-
-        var blocks = PEM.blocks(in: data)
-        if blocks.isEmpty {
-            // Maybe raw DER certificate (.cer / .der)
-            if SecCertificateCreateWithData(nil, data as CFData) != nil {
-                blocks = [PEM.Block(type: "CERTIFICATE", armored: PEM.armor(data, type: "CERTIFICATE"), der: data)]
-            } else {
-                errorMessage = "\(url.lastPathComponent) doesn't contain any PEM blocks or a DER certificate."
-                return
+    /// Load several URLs. Files that classify as chain material are merged into the CA slot.
+    func load(urls: [URL], into slot: Slot? = nil) {
+        guard !urls.isEmpty else { return }
+        isAnalyzing = true
+        Task.detached(priority: .userInitiated) { [weak self] in
+            var imported: [ImportedFile] = []
+            var errors: [String] = []
+            for url in urls {
+                let accessing = url.startAccessingSecurityScopedResource()
+                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                do {
+                    imported.append(try PEMImporter.read(url, as: slot))
+                } catch {
+                    errors.append(error.localizedDescription)
+                }
             }
+            await self?.apply(imported: imported, errors: errors)
         }
+    }
 
-        let detected = classify(blocks: blocks, name: url.lastPathComponent)
-        let target = slot ?? detected
-
-        // Warn if the user dropped a file into a slot that doesn't match its contents.
-        var warning: String?
-        if let slot, slot != detected {
-            switch (slot, detected) {
-            case (.key, _):  warning = "This file has no private key block."
-            case (.cert, .key): warning = "This looks like a private key, not a certificate."
-            case (.ca, .key):   warning = "This looks like a private key, not a CA bundle."
-            case (.cert, .ca):  warning = "This file has \(blocks.filter { $0.type == "CERTIFICATE" }.count) certificates; only the first is treated as the leaf."
-            case (.ca, .cert):  warning = "This file has a single certificate; expected an intermediate chain."
-            default: break
-            }
+    private func apply(imported: [ImportedFile], errors: [String]) {
+        // Several chain files dropped together are merged into one CA bundle.
+        let chains = imported.filter { $0.role == .chain }
+        if let first = chains.first {
+            files[.chain] = chains.dropFirst().reduce(first) { $0.merging($1) }
         }
-
-        files[target] = LoadedFile(url: url, blocks: blocks)
-        slotWarnings[target] = warning
-        errorMessage = nil
+        for file in imported where file.role != .chain {
+            files[file.role] = file
+        }
+        if files[.key]?.isEncryptedKey != true { passphrase = "" }
+        errorMessage = errors.isEmpty ? nil : errors.joined(separator: "\n\n")
         statusMessage = nil
         reanalyze()
     }
 
-    func load(urls: [URL]) {
-        // Auto-sort a multi-file drop. If a file is ambiguous it lands in cert.
-        for url in urls { load(url: url, into: nil) }
-    }
-
     func clear(_ slot: Slot) {
         files[slot] = nil
-        slotWarnings[slot] = nil
+        if slot == .key { passphrase = "" }
         reanalyze()
     }
 
     func clearAll() {
         files = [:]
-        slotWarnings = [:]
+        passphrase = ""
         fileNameEdited = false
         fileName = "certificate.pem"
         errorMessage = nil
@@ -126,66 +110,90 @@ final class BundleModel: ObservableObject {
         reanalyze()
     }
 
-    private func classify(blocks: [PEM.Block], name: String) -> Slot {
-        if blocks.contains(where: { PEM.isPrivateKeyType($0.type) }) { return .key }
-        let certCount = blocks.filter { $0.type == "CERTIFICATE" }.count
-        if certCount > 1 { return .ca }
-        let lower = name.lowercased()
-        let caHints = ["ca_bundle", "ca-bundle", "cabundle", "bundle", "chain", "intermediate", "ca.", "ca_", "ca-", "root"]
-        if caHints.contains(where: { lower.contains($0) }) && !lower.contains("fullchain") { return .ca }
-        return .cert
+    // MARK: Analysis (off the main actor)
+
+    private func scheduleReanalysis() {
+        reanalysisDebounce?.cancel()
+        reanalysisDebounce = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            self?.reanalyze()
+        }
     }
 
-    // MARK: Analysis
-
     private func reanalyze() {
-        // Certificate
-        if let certFile = files[.cert],
-           let leaf = certFile.blocks.first(where: { $0.type == "CERTIFICATE" }) {
+        analysisTask?.cancel()
+        let snapshot = files
+        let pass = passphrase
+        isAnalyzing = true
+        analysisTask = Task.detached(priority: .userInitiated) { [weak self] in
+            let analysis = Self.analyze(files: snapshot, passphrase: pass)
+            guard !Task.isCancelled else { return }
+            await self?.finish(analysis)
+        }
+    }
+
+    nonisolated private static func analyze(files: [Slot: ImportedFile], passphrase: String) -> Analysis {
+        var result = Analysis()
+
+        if let certFile = files[.certificate], let leaf = certFile.blocks.first(where: \.isCertificate) {
             do {
-                let info = try CertificateInfo.parse(der: leaf.der)
-                certInfo = info
-                if !fileNameEdited { fileName = info.suggestedFileName }
+                result.certInfo = try CertificateInfo.parse(der: leaf.der)
             } catch {
-                certInfo = nil
-                errorMessage = error.localizedDescription
+                result.certError = error.localizedDescription
             }
-        } else {
-            certInfo = nil
         }
 
-        // Key
         if let keyFile = files[.key] {
-            keyInfo = PrivateKeyInspector.inspect(blocks: keyFile.blocks, certificate: certInfo?.certificate)
-        } else {
-            keyInfo = nil
+            result.keyInfo = PrivateKeyInspector.inspect(blocks: keyFile.blocks, passphrase: passphrase,
+                                                         certificate: result.certInfo?.certificate)
         }
 
-        // Chain
-        let bundleCerts: [SecCertificate] = (files[.ca]?.blocks ?? [])
-            .filter { $0.type == "CERTIFICATE" }
+        let bundleCerts: [SecCertificate] = (files[.chain]?.blocks ?? [])
+            .filter(\.isCertificate)
             .compactMap { SecCertificateCreateWithData(nil, $0.der as CFData) }
-        // Extra certs bundled inside the certificate file count as chain too.
-        let extraFromCert: [SecCertificate] = (files[.cert]?.blocks ?? [])
-            .filter { $0.type == "CERTIFICATE" }
+        let extraFromCert: [SecCertificate] = (files[.certificate]?.blocks ?? [])
+            .filter(\.isCertificate)
             .dropFirst()
             .compactMap { SecCertificateCreateWithData(nil, $0.der as CFData) }
+        if result.certInfo != nil || !bundleCerts.isEmpty {
+            result.chainInfo = ChainVerifier.verify(leaf: result.certInfo?.certificate, bundle: bundleCerts + extraFromCert)
+        }
+        return result
+    }
 
-        if certInfo != nil || !bundleCerts.isEmpty {
-            chainInfo = ChainVerifier.verify(leaf: certInfo?.certificate, bundle: bundleCerts + extraFromCert)
-        } else {
-            chainInfo = nil
+    private func finish(_ analysis: Analysis) {
+        certInfo = analysis.certInfo
+        certError = analysis.certError
+        keyInfo = analysis.keyInfo
+        chainInfo = analysis.chainInfo
+        if let info = analysis.certInfo, !fileNameEdited {
+            fileName = info.suggestedFileName
+        }
+        isAnalyzing = false
+        refreshExport()
+    }
+
+    private func refreshExport() {
+        guard files[.certificate] != nil else {
+            export = nil
+            exportBlocker = nil
+            return
+        }
+        do {
+            export = try PEMExporter.export(key: files[.key]?.blocks ?? [],
+                                            certificate: files[.certificate]?.blocks ?? [],
+                                            ca: files[.chain]?.blocks ?? [],
+                                            passphrase: passphrase,
+                                            order: order)
+            exportBlocker = nil
+        } catch {
+            export = nil
+            exportBlocker = error.localizedDescription
         }
     }
 
     // MARK: Output
-
-    var output: (pem: String, warnings: [PEMBuilder.Warning]) {
-        PEMBuilder.build(key: files[.key]?.blocks ?? [],
-                         cert: files[.cert]?.blocks ?? [],
-                         ca: files[.ca]?.blocks ?? [],
-                         order: order)
-    }
 
     var normalizedFileName: String {
         var name = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -195,36 +203,42 @@ final class BundleModel: ObservableObject {
     }
 
     func save() {
+        guard let export else { return }
         let panel = NSSavePanel()
         panel.title = "Save PEM"
         panel.nameFieldStringValue = normalizedFileName
         panel.allowedContentTypes = [UTType(filenameExtension: "pem") ?? .data]
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
-        if let dir = files[.cert]?.url.deletingLastPathComponent() {
+        if let dir = files[.certificate]?.url.deletingLastPathComponent() {
             panel.directoryURL = dir
         }
         guard panel.runModal() == .OK, let url = panel.url else { return }
-
-        let (pem, _) = output
         do {
-            try pem.write(to: url, atomically: true, encoding: .utf8)
-            if order.includesKey {
-                // A file containing a private key should be owner-readable only.
-                try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-            }
-            statusMessage = "Saved \(url.lastPathComponent)"
+            try PEMWriter.save(export.data, to: url, containsPrivateKey: export.containsPrivateKey)
+            showStatus("Saved \(url.lastPathComponent)" + (export.containsPrivateKey ? " (permissions 600)" : ""))
             NSWorkspace.shared.activateFileViewerSelecting([url])
         } catch {
-            errorMessage = "Couldn't save: \(error.localizedDescription)"
+            errorMessage = error.localizedDescription
         }
     }
 
     func copyToClipboard() {
-        let (pem, _) = output
+        guard let export else { return }
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(pem, forType: .string)
-        statusMessage = "Copied PEM to clipboard"
+        NSPasteboard.general.setString(export.pem, forType: .string)
+        showStatus(export.containsPrivateKey ? "Copied PEM (includes the private key) to the clipboard"
+                                             : "Copied PEM to the clipboard")
+    }
+
+    private func showStatus(_ text: String) {
+        statusMessage = text
+        statusTask?.cancel()
+        statusTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(6))
+            guard !Task.isCancelled else { return }
+            self?.statusMessage = nil
+        }
     }
 
     func chooseFile(for slot: Slot) {
@@ -232,9 +246,9 @@ final class BundleModel: ObservableObject {
         panel.title = "Choose \(slot.title)"
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.data, .text, .x509Certificate, .pkcs12]
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        load(url: url, into: slot)
+        panel.allowsMultipleSelection = slot == .chain
+        panel.allowedContentTypes = [.data, .text, .x509Certificate]
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+        load(urls: panel.urls, into: slot)
     }
 }

@@ -1,8 +1,12 @@
 #!/bin/sh
-# Double-click in Finder to build ssl2pem.app and launch it. Output goes to build/build.log.
+# Double-click in Finder (or run from Terminal) to test PEMCore, build ssl2pem.app and launch it.
+# Output goes to build/build.log.
 cd "$(dirname "$0")"
 mkdir -p build
 {
+  echo "=== tests started $(date)"
+  ( cd PEMCore && swift test 2>&1 )
+  echo "=== swift test exit: $?"
   echo "=== build started $(date)"
   xcodebuild -project ssl2pem.xcodeproj -scheme ssl2pem -configuration Release \
     -derivedDataPath build/DerivedData CODE_SIGN_IDENTITY=- build 2>&1
